@@ -1,0 +1,464 @@
+import os
+import json
+from os.path import join as path_join
+from nestly import Nest
+from nestly.scons import SConsWrap
+from SCons.Script import Import
+
+# Import env from parent SConstruct
+Import("env")
+localenv = env.Clone()
+
+# SLURM configuration
+USE_SLURM = env["use_slurm"]
+SRUN_PREFIX = "srun --cpus-per-task=2 --mem=5G"
+
+DATA_PATH = "data/gpqa.json"
+METADATA_PATH = "data/gpqa_main.csv"
+SIMULATION_CONFIG_DICT = {
+    "trivial_domain_difficulty": "exp_sim_compare/configs/simulation_domain_trivial_template.json",
+    "easy_domain_difficulty": "exp_sim_compare/configs/simulation_domain_easy_template.json",
+    "medium_domain_difficulty": "exp_sim_compare/configs/simulation_domain_medium_template.json",
+    # model null is true
+    "null_true_domain_difficulty": "exp_sim_compare/configs/simulation_domain_null_true.json",
+}
+DISPLAY_NAMES = {
+    "trivial_domain_difficulty": "Large",
+    "easy_domain_difficulty": "Medium",
+    "medium_domain_difficulty": "Small",
+    "null_true_domain_difficulty": "None",
+}
+
+# Budget
+BUDGET = 10
+
+# E-detector parameters
+NULL_PROB = 0.85
+ALPHA = 0.05
+
+# Nonadaptive alternative probabilities
+MODEL_ALT_PROB = 0.82
+AUDITOR_ALT_PROB = 0.90
+
+# Oracle-specific alternative probabilities (keyed by difficulty)
+ORACLE_MODEL_ALT_PROB = {
+    "trivial_domain_difficulty": 0.37,
+    "easy_domain_difficulty": 0.72,
+    "medium_domain_difficulty": 0.74,
+    "null_true_domain_difficulty": 0.82,
+}
+ORACLE_AUDITOR_ALT_PROB = {
+    "trivial_domain_difficulty": 0.90,
+    "easy_domain_difficulty": 0.90,
+    "medium_domain_difficulty": 0.90,
+    "null_true_domain_difficulty": 0.90,
+}
+
+# Mixture e-detector grids
+MIXTURE_GRID_LOW = 0.60       # robustness grid: all points < NULL_PROB
+MIXTURE_GRID_HIGH = 0.82
+MIXTURE_GRID_STEP = 0.055
+AUDITOR_MIXTURE_GRID_LOW = 0.88   # auditor grid: all points > NULL_PROB
+AUDITOR_MIXTURE_GRID_HIGH = 0.94
+AUDITOR_MIXTURE_GRID_STEP = 0.03
+
+# EWAF learning rate
+EWAF_LEARNING_RATE = 0.1
+
+# Embedding model
+EMBEDDING_MODEL = "sentence-transformers/allenai-specter"
+
+# Active sampler parameters
+NUM_NNS = 20
+EPSILON = 0.05
+HIDDEN_DIMS = [5, 10]
+NUM_EPOCHS = "2 4 8 16"
+LEARNING_RATE = 0.01
+NUM_REQUIRE_ITERS = 100
+
+# Learned sampler parameters
+LEARNED_NUM_INIT = 30
+
+# Class weight parameters for active sampler (for weighting Y=0 vs Y=1 in loss)
+CLASS_WEIGHT_0 = 1.0
+CLASS_WEIGHT_1 = 1.0
+
+ACTIVE_METHODS = [
+    "sr", "sr_adaptive", "sprt_adaptive", "sr_mixture", "sprt_mixture", "sprt_ewaf", "sr_ewaf",
+    ]
+FIXED_SAMPLING_SCHEMES = [
+    "oracle",
+    "learned",
+    "stratified"
+]
+
+if BUDGET == 40:
+    output_dir = "_output_betterEWAF"
+else:
+    output_dir = f"_output_betterEWAF_m{BUDGET}"
+nest = SConsWrap(Nest(), output_dir, alias_environment=localenv)
+# nest = SConsWrap(Nest(), "_output_betterEWAF_m10", alias_environment=localenv)
+nest = SConsWrap(Nest(), output_dir, alias_environment=localenv)
+
+nest.add_aggregate('agg_res', dict)
+nest.add_aggregate('agg_history_csvs', dict)
+nest.add(
+    "embed",
+    [
+        # "metadata",
+        "metadata_question",
+        # "question",
+    ],
+    label_func=lambda c: f"embed_{c}",
+)
+
+@nest.add_target_with_env(localenv)
+def assemble_embeddings(env, outdir, c):
+    """Compute embeddings for GPQA data (independent of difficulty/labels)"""
+    # cmd = ["cp exp_sim_compare/_output/embed_question/embeddings.csv ${TARGETS[0]}"]
+
+    cmd = [
+        "python", "src/assemble_gpqa_data.py",
+        "--data-path", DATA_PATH,
+        "--metadata-path", METADATA_PATH,
+        "--model", "deepseek-ai/deepseek-v3", # doesnt really matter which model since it's all fake data
+        "--seed 0",
+        "--simulate-labels", SIMULATION_CONFIG_DICT["medium_domain_difficulty"],  # config doesn't matter for embeddings
+        "--simulate-by domain_difficulty",
+        "--embed-metadata" if "metadata" in c["embed"] else "",
+        "--embed-question" if "question" in c["embed"] else "",
+        "--embedding-model", EMBEDDING_MODEL,
+        "--out-embeddings-csv", "${TARGETS[0]}",
+    ]
+    targets = [
+        path_join(outdir, "embeddings.csv"),
+    ]
+
+    return env.Command(
+        targets,
+        [],
+        " ".join(map(str, cmd))
+    )
+
+# Used when plotting
+nest.add(
+    "difficulty",
+    [
+        "trivial_domain_difficulty",
+        "easy_domain_difficulty",
+        # "new_easy_domain_difficulty", # old EWAF
+        "medium_domain_difficulty",
+        "null_true_domain_difficulty"
+    ]
+)
+
+# # Used when running on HPC to save some time
+# nest.add(
+#     "difficulty",
+#     [
+#         "medium_domain_difficulty",
+#         "easy_domain_difficulty",
+#         "trivial_domain_difficulty",
+#         # "new_easy_domain_difficulty", # old EWAF
+#         "null_true_domain_difficulty"
+#     ]
+# )
+
+@nest.add_target_with_env(localenv)
+def assemble_data(env, outdir, c):
+    """Assemble GPQA data with simulated labels based on difficulty"""
+
+    cmd = [
+        "python", "src/assemble_gpqa_data.py",
+        "--data-path", DATA_PATH,
+        "--metadata-path", METADATA_PATH,
+        "--model", "deepseek-ai/deepseek-v3", # doesnt really matter which model since it's all fake data
+        "--seed 0",
+        "--simulate-labels", SIMULATION_CONFIG_DICT[c["difficulty"]],
+        "--simulate-by domain_difficulty",
+        "--out-csv", "${TARGETS[0]}",
+    ]
+    targets = [
+        path_join(outdir, "filtered_gpqa_data_prob.csv"),
+    ]
+
+    return env.Command(
+        targets,
+        c["assemble_embeddings"],
+        " ".join(map(str, cmd))
+    )
+
+nest.add(
+    "max_samples",
+    [
+        250
+    ],
+    label_func=lambda c: f"max_samples_{c}",
+)
+
+nest.add(
+    "num_init",
+    [
+        2
+    ],
+    label_func=lambda c: f"num_init_{c}",
+)
+nest.add(
+    "seed",
+    range(100),
+    label_func=lambda c: f"seed_{c}",
+)
+
+
+nest.add(
+    "method",
+    [
+        "sprt", # fixed (bad) choice
+        "sprt_ewaf",  # grid
+        "sr",  # changepoint, fixed
+        "sr_ewaf",  # changement, grid
+    ],
+    label_func=lambda c: f"method_{c}",
+)
+
+nest.add(
+    "sampler_type",
+    lambda c: [
+        "active",
+    ] if c["method"] in ACTIVE_METHODS else [
+        "active",
+        "oracle",
+        "learned",
+        "stratified",
+    ],
+    label_func=lambda c: f"sampler_{c}",
+)
+
+nest.add(
+    "allow_label_only",
+    [
+        False,
+    ],
+    label_func=lambda c: "label_only" if c else "no_label_only",
+)
+
+nest.add(
+    "m_min",
+    lambda c: (
+        [1] if c["sampler_type"] in FIXED_SAMPLING_SCHEMES else [BUDGET]
+    ),
+    label_func=lambda c: f"m_min_{c}",
+)
+
+nest.add(
+    "alt_prob",
+    lambda c: (
+        [NULL_PROB] if "adaptive" in c["method"] or "mixture" in c["method"] or "ewaf" in c["method"]
+        else [ORACLE_MODEL_ALT_PROB[c["difficulty"]]] if c["sampler_type"] == "oracle"
+        else [MODEL_ALT_PROB]
+    ),
+    label_func=lambda c: f"alt_prob_{c:.3f}",
+)
+
+
+@nest.add_target_with_env(localenv)
+def run_e_test(env, outdir, c):
+    """Test using e-detectors to see if there is subgroup with perf below threshold"""
+
+    # Map sampler type to actual sampler class (active_ucb uses active sampler with k_std_dev)
+    use_adaptive = "adaptive" in c["method"]
+    use_mixture = "mixture" in c["method"]
+    use_ewaf = "ewaf" in c["method"]
+    actual_sampler_type = "active" if c["sampler_type"] in ["active_ucb"] else c["sampler_type"]
+    base_method = c["method"].replace("_adaptive", "").replace("_mixture", "").replace("_ewaf", "")
+
+    cmd = [
+        "python", "src/do_e_test.py",
+        "--seed", c["seed"] + 1,
+        "--in-data-csv", "${SOURCES[0]}",
+        "--in-embeddings-csv", "${SOURCES[1]}",
+        "--history", "${TARGETS[0]}",
+        # "--plot", "${TARGETS[1]}",
+        "--result-csv", "${TARGETS[1]}",
+        "--log", "${TARGETS[2]}",
+        "--test-type dual",
+        "--tester-type standard",
+        # Sampler type
+        "--sampler-type", actual_sampler_type,
+        # E-detector args
+        "--method", base_method,
+        "--null-prob", NULL_PROB,
+        "--alt-prob", c["alt_prob"],
+        "--alpha", ALPHA,
+        "--m-min", c["m_min"],
+        "--l2-penalty 0",
+        # Detector variant flags (boolean flags only; value-args added via extend below)
+        "--adaptive" if use_adaptive else "",
+        "--mixture" if use_mixture else "",
+        "--ewaf" if use_ewaf else "",
+        "--iter-require-test", c["max_samples"] - NUM_REQUIRE_ITERS,
+        # Label-only option
+        "--allow-label-only" if c["allow_label_only"] else "",
+    ]
+    targets = [
+        path_join(outdir, "history.csv"),
+        # path_join(outdir, "e_statistic_tune.png"),
+        path_join(outdir, "result.csv"),
+        path_join(outdir, "log.txt"),
+    ]
+
+    if not use_adaptive and not use_mixture and not use_ewaf:
+        auditor_prob = ORACLE_AUDITOR_ALT_PROB[c["difficulty"]] if c["sampler_type"] == "oracle" else AUDITOR_ALT_PROB
+        cmd.extend(["--auditor-alt-prob", auditor_prob])
+    if use_mixture:
+        cmd.extend([
+            "--grid-low", MIXTURE_GRID_LOW,
+            "--grid-high", MIXTURE_GRID_HIGH,
+            "--grid-step", MIXTURE_GRID_STEP,
+            "--auditor-grid-low", AUDITOR_MIXTURE_GRID_LOW,
+            "--auditor-grid-high", AUDITOR_MIXTURE_GRID_HIGH,
+            "--auditor-grid-step", AUDITOR_MIXTURE_GRID_STEP,
+        ])
+    if use_ewaf:
+        cmd.extend([
+            "--grid-low", MIXTURE_GRID_LOW,
+            "--grid-high", MIXTURE_GRID_HIGH,
+            "--grid-step", MIXTURE_GRID_STEP,
+            "--auditor-grid-low", AUDITOR_MIXTURE_GRID_LOW,
+            "--auditor-grid-high", AUDITOR_MIXTURE_GRID_HIGH,
+            "--auditor-grid-step", AUDITOR_MIXTURE_GRID_STEP,
+            "--ewaf-learning-rate", EWAF_LEARNING_RATE,
+        ])
+    if c["sampler_type"] in ["active", "active_ucb"]:
+        cmd.extend([
+            "--num-nns", NUM_NNS,
+            f"--hidden-dims {' '.join(map(str, HIDDEN_DIMS))}" if HIDDEN_DIMS else "",
+            "--epsilon", EPSILON,
+            "--num-epochs", NUM_EPOCHS,
+            "--learning-rate", LEARNING_RATE,
+            "--num-init", c["num_init"],
+            "--max-samples", c["max_samples"],
+            # Active sampler specific args (greedy, k_std_dev=0)
+            # Active sampler with UCB-style exploration (k_std_dev != 0)
+            f"--k-std-dev \"{K_STD_DEV}\"" if c["sampler_type"] == "active_ucb" else "",
+            # Class weights for loss function
+            "--class-weight-0", CLASS_WEIGHT_0,
+            "--class-weight-1", CLASS_WEIGHT_1,
+        ])
+        # if c["sampler_type"] == "active_ucb":
+        #     cmd.extend(["--subgroup-plot", "${TARGETS[4]}",])
+        #     targets.append(path_join(outdir, "subgroup_histogram.png"))
+    elif c["sampler_type"] == "stratified":
+        cmd.extend([
+            "--stratify-by", "domain",
+            "--max-samples", c["max_samples"],
+        ])
+    elif c["sampler_type"] == "oracle":
+        cmd.extend([
+            "--stratify-by", "domain",
+            "--oracle-stratum", "Chemistry",
+            "--max-samples", c["max_samples"],
+        ])
+    elif c["sampler_type"] == "rag":
+        cmd.extend([
+            "--num-nns", NUM_NNS,
+            f"--hidden-dims {' '.join(map(str, HIDDEN_DIMS))}" if HIDDEN_DIMS else "",
+            "--num-epochs", NUM_EPOCHS,
+            "--learning-rate", LEARNING_RATE,
+            "--rag-num-candidates", RAG_NUM_CANDIDATES,
+            "--rag-context-k", RAG_CONTEXT_K,
+            "--rag-llm-model", RAG_LLM_MODEL,
+            "--rag-prompt-template", RAG_PROMPT_TEMPLATE,
+            "--rag-llm-cache-path", RAG_LLM_CACHE_PATH,
+            "--max-samples", RAG_MAX_SAMPLES,
+        ])
+    elif c["sampler_type"] == "learned":
+        cmd.extend([
+            "--num-nns", NUM_NNS,
+            f"--hidden-dims {' '.join(map(str, HIDDEN_DIMS))}" if HIDDEN_DIMS else "",
+            "--epsilon", EPSILON,
+            "--num-epochs", NUM_EPOCHS,
+            "--learning-rate", LEARNING_RATE,
+            "--num-init", LEARNED_NUM_INIT + c["num_init"],
+            "--max-samples", c["max_samples"],
+        ])
+    elif c["sampler_type"] == "iid":
+        cmd.extend([
+            "--max-samples", c["max_samples"],
+        ])
+    else:
+        raise NotImplementedError(f"what sampler is this? {c['sampler_type']}")
+
+    if c["difficulty"] not in c["agg_res"]:
+        c["agg_res"][c["difficulty"]] = []
+    c["agg_res"][c["difficulty"]].append(targets[1])
+
+    # Collect history CSVs to compare subgroup sizes across difficulties
+    if c["difficulty"] not in c["agg_history_csvs"]:
+        c["agg_history_csvs"][c["difficulty"]] = []
+    c["agg_history_csvs"][c["difficulty"]].append(targets[0])
+
+    full_cmd = " ".join(map(str, cmd))
+    if USE_SLURM:
+        full_cmd = f"{SRUN_PREFIX} {full_cmd}"
+
+    return env.Command(
+        targets,
+        [c["assemble_data"][0], c["assemble_embeddings"][0]],
+        full_cmd
+    )
+
+nest.pop('seed')
+
+@nest.add_target_with_env(localenv)
+def aggregate_results(env, outdir, c):
+    """Aggregate results across seeds, grouping by label, method, and sampler_type"""
+    csv_files = c["agg_res"][c["difficulty"]]
+    csv_glob = " ".join([
+        path_join("exp_sim_compare_withMixture", f.replace("seed_0", "seed_*"))
+        for f in csv_files if "seed_0" in f
+    ])
+    cmd = [
+        "python", "src/aggregate_results.py",
+        "--input-csv", csv_glob,
+        "--out-csv", "${TARGETS[0]}",
+        "--groupby-cols", "label", "method",
+    ]
+    sources = csv_files
+    targets = [path_join(outdir, "agg_result.csv")]
+
+    return env.Command(
+        targets,
+        sources,
+        " ".join(map(str, cmd))
+    )
+
+nest.pop("difficulty")
+
+@nest.add_target_with_env(localenv)
+def plot_agg_res(env, outdir, c):
+    """Plot distribution of rejection times across methods"""
+    difficulties = list(c["agg_res"].keys())
+
+    sources = []
+    cmd = ["python", "src/plot_aggregate_results.py"]
+    source_idx = 0
+    for difficulty in difficulties:
+        csv_files = c["agg_res"][difficulty]
+        sources.extend(csv_files)
+        csv_refs = " ".join([path_join("exp_sim_compare_withMixture", csv_file.replace("seed_0", "seed_*")) for csv_file in csv_files if "seed_0" in csv_file])
+        cmd.extend(["--data-setting", f'"{DISPLAY_NAMES[difficulty]}"', csv_refs])
+        source_idx += len(csv_files)
+    cmd.extend(["--group-col", "method",  "--y-max", 300, "--null-setting", f'"{DISPLAY_NAMES["null_true_domain_difficulty"]}"', "--out-plot-power", "${TARGETS[0]}", "--out-plot-obs", "${TARGETS[1]}", "--out-csv ${TARGETS[2]}", "--out-legend", "${TARGETS[3]}"])
+
+    targets = [
+        path_join(outdir, "plot_agg_power.png"),
+        path_join(outdir, "plot_agg_obs.png"),
+        path_join(outdir, "agg_res_out.csv"),
+        path_join(outdir, "plot_agg_legend.png"),
+    ]
+    return env.Command(
+        targets,
+        sources,
+        " ".join(map(str, cmd))
+    )
