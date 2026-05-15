@@ -1,0 +1,21 @@
+{
+    "domains": ["physics", "chemistry", "biology"],
+    "difficulties": ["undergrad", "grad", "postgrad"],
+    "domain_difficulty_correctness_probs": {
+        "physics": {
+            "undergrad": 0.98,
+            "grad": 0.97,
+            "postgrad": 0.96
+        },
+        "chemistry": {
+            "undergrad": 0.96,
+            "grad": 0.95,
+            "postgrad": 0.94
+        },
+        "biology": {
+            "undergrad": 0.98,
+            "grad": 0.96,
+            "postgrad": 0.95
+        }
+    }
+}

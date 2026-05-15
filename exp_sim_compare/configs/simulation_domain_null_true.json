@@ -1,0 +1,22 @@
+{
+    "domain_difficulty_correctness_probs": {
+        "Physics": {
+            "Easy undergraduate level (or easier)": 0.98,
+            "Hard undergraduate level (could be a question on a hard undergraduate exam for students majoring in the subject)": 0.98,
+            "Hard graduate level (could be a question on a hard graduate exam for PhD students in the domain)": 0.97,
+            "Post-graduate level or harder (only individuals with years of highly specialized expertise could reliably answer correctly)": 0.96
+        },
+        "Chemistry": {
+            "Easy undergraduate level (or easier)": 0.96,
+            "Hard undergraduate level (could be a question on a hard undergraduate exam for students majoring in the subject)": 0.96,
+            "Hard graduate level (could be a question on a hard graduate exam for PhD students in the domain)": 0.94,
+            "Post-graduate level or harder (only individuals with years of highly specialized expertise could reliably answer correctly)": 0.92
+        },
+        "Biology": {
+            "Easy undergraduate level (or easier)": 0.98,
+            "Hard undergraduate level (could be a question on a hard undergraduate exam for students majoring in the subject)": 0.98,
+            "Hard graduate level (could be a question on a hard graduate exam for PhD students in the domain)": 0.96,
+            "Post-graduate level or harder (only individuals with years of highly specialized expertise could reliably answer correctly)": 0.95
+        }
+    }
+}

@@ -146,23 +146,11 @@ nest.add(
     [
         "trivial_domain_difficulty",
         "easy_domain_difficulty",
-        # "new_easy_domain_difficulty", # old EWAF
         "medium_domain_difficulty",
         "null_true_domain_difficulty"
     ]
 )
 
-# # Used when running on HPC to save some time
-# nest.add(
-#     "difficulty",
-#     [
-#         "medium_domain_difficulty",
-#         "easy_domain_difficulty",
-#         "trivial_domain_difficulty",
-#         # "new_easy_domain_difficulty", # old EWAF
-#         "null_true_domain_difficulty"
-#     ]
-# )
 
 @nest.add_target_with_env(localenv)
 def assemble_data(env, outdir, c):
