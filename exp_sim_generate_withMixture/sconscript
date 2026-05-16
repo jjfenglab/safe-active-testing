@@ -152,16 +152,6 @@ nest.add(
     ]
 )
 
-# Used when running on HPC to save some time
-# nest.add(
-#     "difficulty",
-#     [
-#         "medium",
-#         "orig_easy",
-#         "trivial",
-#         "null_true"
-#     ]
-# )
 
 # Assemble question bank CSVs into standardized format (one per config) and compute embeddings
 @nest.add_target_with_env(localenv)

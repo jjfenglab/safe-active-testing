@@ -1,0 +1,8 @@
+{
+    "difficulty_correctness_probs": {
+        "Easy undergraduate level (or easier)": 1.0,
+        "Hard undergraduate level (could be a question on a hard undergraduate exam for students majoring in the subject)": 1.0,
+        "Hard graduate level (could be a question on a hard graduate exam for PhD students in the domain)": 1.0,
+        "Post-graduate level or harder (only individuals with years of highly specialized expertise could reliably answer correctly)": 0.0
+    }
+}
